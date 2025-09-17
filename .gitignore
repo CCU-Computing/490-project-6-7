@@ -1,0 +1,68 @@
+# --- Python bytecode / cache ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- OS / Editor junk ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- Packaging / builds ---
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- Testing / coverage ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# --- Type checkers / linters ---
+.mypy_cache/
+.pyre/
+.ruff_cache/
+
+# --- Logs ---
+*.log
+logs/
+celerybeat-schedule
+celerybeat.pid
+
+# --- Flask / local config & secrets ---
+instance/
+*.sqlite3
+*.db
+*.db-journal
+.env
+.env.*
+.flaskenv
+.python-version
+
+# Keep a placeholder file if you want instance/ tracked
+!instance/.gitkeep
+
+# --- Cache / notebooks ---
+.ipynb_checkpoints/
+
+# --- Optional: Node-based asset pipeline (remove if unused) ---
+node_modules/
+*.tsbuildinfo
+.parcel-cache/
+.pnp.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
