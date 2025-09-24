@@ -1,3 +1,14 @@
-Flask>=3.0,<4
-python-dotenv>=1.0,<2
-gunicorn>=21.2,<22
+Flask>=3
+SQLAlchemy>=2
+Flask-SQLAlchemy>=3.1
+Flask-Migrate>=4
+alembic>=1.13
+psycopg[binary]>=3.1
+python-dotenv>=1.0
+Flask-Login>=0.6.3
+cryptography>=42.0.0
+boto3>=1.34.0
+Flask-SocketIO>=5.3.6
+python-socketio[client]>=5.11.0
+eventlet>=0.36.1
+redis>=5.0.0

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <title>Semester Planner</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- moved to /static/css -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}">
+  </head>
+  <body class="min-h-screen bg-gradient-to-b from-gray-50 to-gray-100 text-gray-900 select-none">
+    <header class="sticky top-0 z-10 backdrop-blur bg-white/70 border-b border-black/5">
+      <div class="mx-auto max-w-7xl px-4 py-4 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <div class="h-9 w-9 rounded-2xl bg-black text-white grid place-items-center shadow">
+          </div>
+          <h1 class="text-xl font-semibold tracking-tight">Semester Planner</h1>
+        </div>
+        <div class="flex gap-2">
+          <button id="open-add-modal" class="btn-base">Add class</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="relative px-0">
+      <div id="viewport" class="flex-1 overflow-x-auto scroll-smooth snap-x snap-mandatory no-scrollbar w-[100vw] ml-[calc(50%-50vw)] mr-[calc(50%-50vw)]">
+        <ul id="track" class="flex items-stretch gap-6 px-4 py-4"></ul>
+      </div>
+      <div id="dots" class="flex justify-center gap-2 py-2"></div>
+      <footer class="py-8 text-center text-xs text-gray-500">
+      </footer>
+    </main>
+
+    <!-- Add Class Modal -->
+    <div id="add-modal" class="fixed inset-0 z-50 hidden">
+      <div class="absolute inset-0 bg-black/40"></div>
+      <div class="absolute inset-0 flex items-center justify-center p-4">
+        <div class="modal-panel rounded-2xl border border-black/5 bg-white shadow-2xl overflow-hidden">
+          <div class="flex items-center justify-between px-5 py-4 border-b border-black/5">
+            <div class="font-semibold">Add Courses</div>
+            <button id="close-add-modal" class="text-gray-500 hover:text-gray-800">×</button>
+          </div>
+          <div class="px-5 py-4 space-y-4 flex-1 overflow-hidden">
+            <div class="flex gap-2">
+              <input id="modal-search-input" type="text" placeholder="Search catalog (code or title)" class="w-full rounded-xl border border-black/5 bg-white px-4 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-gray-300"/>
+              <button id="modal-search-btn" class="btn-base">Search</button>
+            </div>
+            <div id="modal-results" class="results-scroll grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 p-1"></div>
+          </div>
+          <div class="px-5 py-4 border-t border-black/5 flex items-center justify-between">
+            <div id="modal-selected-count" class="text-sm text-gray-600">0 selected</div>
+            <div class="flex gap-2">
+              <button id="modal-cancel" class="btn-base">Cancel</button>
+              <button id="modal-add" class="btn-base">Add to current semester</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Single entry module that imports all others -->
+    <script type="module" src="{{ url_for('static', filename='js/index.js') }}"></script>
+  </body>
+</html>
