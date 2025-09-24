@@ -97,8 +97,9 @@ def seed(session):
     session.flush()
 
     # Catalog
-    existing_courses = {c.code for c in session.query(CourseCatalog.code).all()}
-    for code, title, credits in COURSES:
-        if code not in existing_courses:
-            session.add(CourseCatalog(code=code, title=title, credits=credits))
-    session.commit()
+    existing_codes = {code for (code,) in session.query(CourseCatalog.code).all()}
+    to_add = [CourseCatalog(code=code, title=title, credits=credits)
+              for code, title, credits in COURSES if code not in existing_codes]
+    if to_add:
+        session.add_all(to_add)
+        session.commit()
