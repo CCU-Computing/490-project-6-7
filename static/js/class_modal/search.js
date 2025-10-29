@@ -1,187 +1,229 @@
 // static/js/class_modal/search.js
 import { results, selectedCount } from "../semesters/state_nav.js";
 
-export const selectedCourseIds = new Set();
+export const selectedCourseIds = new Set(); // stores catalogId (c.catalog_id ?? c.id) as strings
 const expandedGroupIds = new Set(); // collapsed/expanded state per group
+let CURRENT_TERM_UPPER = ""; // set by loadAndRenderModal()
 
-// ---------------- UI helpers ----------------
-function progressBar(completed, required) {
-  const pct = required > 0 ? Math.min(100, Math.round((completed / required) * 100)) : 0;
-  const wrap = document.createElement("div");
-  wrap.className = "w-full mt-1 h-2 bg-gray-200 rounded";
-  const fill = document.createElement("div");
-  fill.className = "h-2 rounded";
-  fill.style.width = `${pct}%`;
-  wrap.appendChild(fill);
-  fill.classList.add(pct >= 100 ? "bg-green-500" : "bg-blue-500");
-  return wrap;
+/* ---------- style bootstrap (first-open safety) ---------- */
+function ensurePlannerStyles() {
+  const has = Array.from(document.styleSheets).some(s => {
+    try { return (s.href || "").includes("planner.css"); } catch { return false; }
+  });
+  if (!has) {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = "/static/css/planner.css";
+    document.head.appendChild(link);
+  }
 }
 
-function termChips(offered_terms) {
+/* ensure/return the grid container inside a group's body */
+function getOrCreateGrid(body) {
+  let grid = body.querySelector(":scope > .modal-grid");
+  if (!grid) {
+    grid = document.createElement("div");
+    grid.className = "modal-grid";
+    grid.style.display = "grid";
+    grid.style.gridTemplateColumns = "repeat(3, minmax(0, 1fr))";
+    grid.style.gap = "0.5rem";
+    grid.style.alignItems = "stretch";
+    // move any existing cards into the grid
+    Array.from(body.querySelectorAll(":scope > .modal-card")).forEach(card => grid.appendChild(card));
+    body.appendChild(grid);
+  }
+  return grid;
+}
+
+/* ---------- UI helpers ---------- */
+
+function termChipsFull(offered_terms) {
+  const ALL = ["SPRING", "SUMMER", "FALL"];
+  const LABEL = { SPRING: "Spring", SUMMER: "Summer", FALL: "Fall" };
+  const set = new Set((offered_terms || []).map(s => String(s || "").toUpperCase()));
+
   const row = document.createElement("div");
-  row.className = "flex gap-1 flex-wrap mt-1";
-  const all = ["SPRING","SUMMER","FALL"];
-  const set = new Set(offered_terms || []);
-  for (const t of all) {
+  row.className = "flex items-center gap-1 mt-1 pb-2 offered-row";
+
+  ALL.forEach((t) => {
     const chip = document.createElement("span");
-    chip.className = "text-[10px] px-1.5 py-0.5 rounded border";
-    chip.textContent = t[0] + t.slice(1).toLowerCase();
-    if (set.has(t)) chip.classList.add("border-gray-300");
-    else chip.classList.add("opacity-40", "border-gray-300");
+    const enabled = set.has(t);
+    chip.className = [
+      "inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] leading-4 whitespace-nowrap",
+      enabled
+        ? "border-gray-400 bg-gray-100 text-gray-800"
+        : "border-gray-300 text-gray-500 opacity-50"
+    ].join(" ");
+    chip.textContent = LABEL[t];
     row.appendChild(chip);
+  });
+
+  if (
+    CURRENT_TERM_UPPER &&
+    Array.isArray(offered_terms) &&
+    offered_terms.length > 0 &&
+    !offered_terms.map(s => String(s).toUpperCase()).includes(CURRENT_TERM_UPPER)
+  ) {
+    const ctx = document.createElement("span");
+    ctx.className = "ml-auto text-[10px] text-gray-600 whitespace-nowrap";
+    const nice = CURRENT_TERM_UPPER[0] + CURRENT_TERM_UPPER.slice(1).toLowerCase();
+    ctx.textContent = `Not typically offered in ${nice}`;
+    row.appendChild(ctx);
   }
-  if (!offered_terms || offered_terms.length === 0) {
-    const chip = document.createElement("span");
-    chip.className = "text-[10px] px-1.5 py-0.5 rounded border opacity-60";
-    chip.textContent = "As needed";
-    row.appendChild(chip);
-  }
+
   return row;
 }
 
-// unmet prereqs block (count + list)
-function unmetPrereqBlock(c) {
-  if (c.prereq_ok) return document.createElement("div");
-  const list = Array.isArray(c.unmet_prereqs) ? c.unmet_prereqs : [];
+// Styled yellow box with unmet prereqs listed
+function prereqWarningBox(unmetList) {
+  const has = Array.isArray(unmetList) && unmetList.length > 0;
   const box = document.createElement("div");
-  box.className = "text-[11px] mt-0.5 text-yellow-700";
-  const head = document.createElement("div");
-  head.textContent = `Prerequisites not met (${list.length})`;
-  box.appendChild(head);
-  if (list.length) {
-    const ul = document.createElement("ul");
-    ul.className = "list-disc ml-4";
-    list.slice(0, 8).forEach(p => {
-      const li = document.createElement("li");
-      li.textContent = p;
-      ul.appendChild(li);
-    });
-    if (list.length > 8) {
-      const more = document.createElement("div");
-      more.textContent = `+${list.length - 8} more`;
-      ul.appendChild(more);
-    }
-    box.appendChild(ul);
+  box.className = "prereq-box " + (has ? "warn" : "spacer");
+
+  if (has) {
+    const head = document.createElement("span");
+    head.className = "font-medium mr-1";
+    head.textContent = "Prerequisites not met:";
+    const span = document.createElement("span");
+    span.className = "flex-1";
+    span.textContent = unmetList.join(", ");
+    box.appendChild(head);
+    box.appendChild(span);
+  } else {
+    box.appendChild(document.createElement("span"));
   }
   return box;
 }
 
+/* ---------- Card ---------- */
+
 function courseCard(c) {
+  const catalogId = String(c.catalog_id ?? c.id);
+
   const card = document.createElement("div");
-  card.className = "modal-card flex items-center justify-between gap-3 p-2 rounded border";
+  card.className = "modal-card relative flex flex-col gap-2 p-2 rounded border";
   card.dataset.id = String(c.id);
-  card.dataset.selected = selectedCourseIds.has(String(c.id)) ? "true" : "false";
+  card.dataset.catalogId = catalogId;
+  card.dataset.selected = selectedCourseIds.has(catalogId) ? "true" : "false";
+  card.style.gridColumn = "auto"; // never span full width
 
   let disabled = !!c.disabled;
-  if (c.taken) {
-    card.classList.add("border-green-500", "opacity-60");
+  const isPlanned = !!(c.taken || c.assigned);
+  const prereqNotMet = !c.prereq_ok;
+
+  // state classes (CSS handles background)
+  card.classList.remove("is-planned","is-blocked","is-available","border-green-500","border-yellow-500","border-gray-200");
+  if (isPlanned) {
+    card.classList.add("is-planned", "border-green-500");
     disabled = true;
-  } else if (c.assigned) {
-    card.classList.add("border-gray-500", "opacity-60");
-    disabled = true;
-  } else if (!c.prereq_ok) {
-    card.classList.add("border-yellow-500", "opacity-80");
+  } else if (prereqNotMet) {
+    card.classList.add("is-blocked", "border-yellow-500");
     disabled = true;
   } else {
-    card.classList.add("border-gray-200");
-    if (!c.offered_this_term) card.classList.add("opacity-90");
+    card.classList.add("is-available", "border-gray-200");
   }
 
-  const left = document.createElement("div");
-  left.className = "min-w-0 flex-1";
+  const content = document.createElement("div");
+  content.className = "flex-1 flex flex-col";
+
+  const headerRow = document.createElement("div");
+  headerRow.className = "flex items-start gap-2";
+
   const title = document.createElement("div");
-  title.className = "text-sm font-semibold chip-title flex items-center gap-2 truncate";
+  title.className = "text-sm font-semibold chip-title two-line-title flex-1";
   title.textContent = `${c.code} · ${c.title}`;
 
-  const sub = document.createElement("div");
-  sub.className = "text-xs text-gray-500 chip-sub";
-  sub.textContent = `${c.credits || 0} credits`;
+  const rightHead = document.createElement("div");
+  rightHead.className = "flex items-center gap-2 shrink-0";
 
-  const chips = termChips(c.offered_terms || []);
-
-  const stateHint = document.createElement("div");
-  stateHint.className = "text-[11px] mt-0.5";
-  if (c.taken) { stateHint.textContent = "Completed"; stateHint.classList.add("text-green-600"); }
-  else if (c.assigned) { stateHint.textContent = "Already in your plan"; stateHint.classList.add("text-gray-600"); }
-  else if (!c.prereq_ok && (!c.unmet_prereqs || c.unmet_prereqs.length === 0)) { stateHint.textContent = "Prerequisites not met"; stateHint.classList.add("text-yellow-700"); }
-  else if (!c.offered_this_term) { stateHint.textContent = "Not typically offered this term"; stateHint.classList.add("text-gray-500"); }
-
-  left.appendChild(title);
-  left.appendChild(sub);
-  left.appendChild(chips);
-  if (stateHint.textContent) left.appendChild(stateHint);
-  if (!c.prereq_ok) left.appendChild(unmetPrereqBlock(c));
+  const credits = document.createElement("div");
+  credits.className = "chip-credits text-xs text-gray-600";
+  credits.textContent = `${c.credits || 0} credits`;
 
   const toggle = document.createElement("input");
   toggle.type = "checkbox";
-  toggle.checked = selectedCourseIds.has(String(c.id));
+  toggle.checked = selectedCourseIds.has(catalogId);
   toggle.disabled = disabled;
+  if (disabled) toggle.setAttribute("aria-disabled", "true");
+
+  rightHead.appendChild(credits);
+  rightHead.appendChild(toggle);
+
+  headerRow.appendChild(title);
+  headerRow.appendChild(rightHead);
+
+  const chipsRow = termChipsFull(c.offered_terms || []);
+  const unmet = Array.isArray(c.unmet_prereqs) ? c.unmet_prereqs : [];
+  const prereqRow = prereqWarningBox(prereqNotMet ? unmet : []);
+
+  const state = document.createElement("div");
+  state.className = "text-[11px] mt-1";
+  if (c.taken) { state.textContent = "Completed"; state.classList.add("text-green-600"); }
+  else if (c.assigned) { state.textContent = "Already in your plan"; state.classList.add("text-gray-600"); }
 
   const toggleSelection = (on) => {
     if (disabled) return;
-    if (on) selectedCourseIds.add(String(c.id)); else selectedCourseIds.delete(String(c.id));
+    if (on) selectedCourseIds.add(catalogId); else selectedCourseIds.delete(catalogId);
     card.dataset.selected = on ? "true" : "false";
     selectedCount.textContent = `${selectedCourseIds.size} selected`;
   };
-
   toggle.addEventListener("click", (e) => { e.stopPropagation(); toggleSelection(toggle.checked); });
   card.addEventListener("click", () => {
     if (disabled) return;
-    const next = !selectedCourseIds.has(String(c.id));
+    const next = !selectedCourseIds.has(catalogId);
     toggle.checked = next;
     toggleSelection(next);
   });
 
-  card.appendChild(left);
-  card.appendChild(toggle);
+  card.style.minHeight = "154px";
+
+  content.appendChild(headerRow);
+  content.appendChild(chipsRow);
+  content.appendChild(prereqRow);
+  if (isPlanned) content.appendChild(state);
+
+  card.appendChild(content);
   return card;
 }
 
-// Collapsible full-width group. Cards rendered in 3-column grid.
+/* ---------- Group ---------- */
+
 function groupSection(g) {
   const sec = document.createElement("section");
-  sec.className = "modal-group w-full rounded border border-gray-200";
+  sec.className = "modal-group w-full rounded border border-gray-200 bg-slate-50";
+  sec.dataset.groupId = String(g.group_id);
 
-  // header
   const header = document.createElement("button");
   header.type = "button";
-  header.className = "w-full flex items-center justify-between p-2";
+  header.className = "w-full flex items-center gap-2 p-2 modal-group-header sticky top-0 z-20 bg-inherit";
   header.setAttribute("aria-expanded", expandedGroupIds.has(g.group_id) ? "true" : "false");
 
   const hLeft = document.createElement("div");
-  hLeft.className = "font-semibold truncate";
+  hLeft.className = "group-title font-semibold truncate";
   hLeft.textContent = g.title;
-
-  const rightWrap = document.createElement("div");
-  rightWrap.className = "flex items-center gap-3";
-
-  const count = document.createElement("div");
-  count.className = "text-sm text-gray-600 whitespace-nowrap";
-  count.textContent = `${g.completed_count || 0} / ${g.required_count || 0}`;
 
   const caret = document.createElement("span");
   caret.className = "text-xs select-none";
   caret.textContent = expandedGroupIds.has(g.group_id) ? "▾" : "▸";
 
-  rightWrap.appendChild(count);
-  rightWrap.appendChild(caret);
+  const hRight = document.createElement("div");
+  hRight.className = "flex items-center gap-2";
+  hRight.appendChild(caret);
 
   header.appendChild(hLeft);
-  header.appendChild(rightWrap);
+  header.appendChild(hRight);
 
-  // body
   const body = document.createElement("div");
-  body.className = "px-2 pb-3";
+  body.className = "px-2 pb-3 modal-group-body";
   if (!expandedGroupIds.has(g.group_id)) body.style.display = "none";
 
-  const bar = progressBar(g.completed_count || 0, g.required_count || 0);
-  bar.classList.add("mb-2");
-  body.appendChild(bar);
+  const grid = getOrCreateGrid(body);
 
-  const grid = document.createElement("div");
-  grid.className = "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 mt-1 w-full";
-  (g.courses || []).forEach((c) => grid.appendChild(courseCard(c)));
-  body.appendChild(grid);
+  (g.courses || []).forEach((c) => {
+    const card = courseCard(c);
+    card.classList.add("h-full");
+    grid.appendChild(card);
+  });
 
   header.addEventListener("click", () => {
     const nowOpen = body.style.display === "none";
@@ -196,12 +238,15 @@ function groupSection(g) {
   return sec;
 }
 
-// Render groups stacked vertically
+/* ---------- Render ---------- */
+
 export function renderModalGroups(groups) {
+  ensurePlannerStyles();
   if (!results) return;
   results.className = "";
   results.classList.add("results-scroll", "flex", "flex-col", "gap-4", "w-full");
   results.style.overflowX = "hidden";
+  results.style.overflowY = "auto";
 
   if (expandedGroupIds.size === 0) {
     (groups || []).forEach(g => expandedGroupIds.add(g.group_id));
@@ -211,13 +256,17 @@ export function renderModalGroups(groups) {
   (groups || []).forEach((g) => results.appendChild(groupSection(g)));
 }
 
-// Fetch groups and render
+/* ---------- Fetch + render ---------- */
+
 export async function loadAndRenderModal(q, currentTermUpper) {
+  ensurePlannerStyles();
+  CURRENT_TERM_UPPER = String(currentTermUpper || "").toUpperCase();
   const url = new URL("/api/requirements", window.location.origin);
   if (q && q.trim()) url.searchParams.set("q", q.trim());
-  if (currentTermUpper) url.searchParams.set("current_term", currentTermUpper);
+  if (CURRENT_TERM_UPPER) url.searchParams.set("current_term", CURRENT_TERM_UPPER);
   const r = await fetch(url.toString());
   if (!r.ok) throw new Error("failed to load requirements");
   const data = await r.json();
   renderModalGroups(data.groups || []);
+  return true;
 }

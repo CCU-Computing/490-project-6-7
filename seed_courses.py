@@ -1,7 +1,6 @@
-# seed_courses.py
 from __future__ import annotations
 
-from sqlalchemy import text
+from sqlalchemy import text, func
 
 from models.models import (
     db,
@@ -36,11 +35,7 @@ COURSES = [
     # CSCI
     ("CSCI 120", "Introduction to Web Interface Development", 3),
     ("CSCI 135", "Introduction to Programming", 3),
-    ("CSCI 140", "Introduction to Algorithmic Design I", 3),
-    ("CSCI 140L","Introduction to Algorithmic Design I Laboratory", 1),
     ("CSCI 145", "Intermediate Programming", 3),
-    ("CSCI 150", "Introduction to Algorithmic Design II", 3),
-    ("CSCI 150L","Introduction to Algorithmic Design II Laboratory", 1),
     ("CSCI 210", "Computer Organization and Programming", 3),
     ("CSCI 220", "Data Structures", 3),
     ("CSCI 225", "Introduction to Relational Database and SQL", 3),
@@ -203,10 +198,10 @@ TYPICAL_OFFERINGS = {
 # -----------------------------
 PREREQS = {
     # CSCI
-    "CSCI 145": [["CSCI 135"], ["CSCI 140","CSCI 140L"]],
-    "CSCI 210": [["CSCI 145"], ["CSCI 150","CSCI 150L"]],
-    "CSCI 220": [["CSCI 145"], ["CSCI 150","CSCI 150L"]],
-    "CSCI 330": [["CSCI 145"], ["CSCI 150","CSCI 150L"]],
+    "CSCI 145": [["CSCI 135"]],
+    "CSCI 210": [["CSCI 145"]],
+    "CSCI 220": [["CSCI 145"]],
+    "CSCI 330": [["CSCI 145"]],
     "CSCI 350": [["CSCI 220"]],
     "CSCI 356": [["CSCI 220"]],
     "CSCI 380": [["CSCI 220"]],
@@ -291,13 +286,16 @@ SCI_LECTURE_LAB_PAIRS = [
     ("PHYS 212","PHYS 212L"),
 ]
 
+
 def _get_catalog_map(session):
     rows = session.query(CourseCatalog).all()
     return {c.code.strip().upper(): c for c in rows}
 
+
 def _purge_invalid_offerings(session):
     session.execute(text("DELETE FROM course_typical_offering WHERE term NOT IN ('SPRING','SUMMER','FALL')"))
     session.flush()
+
 
 def _ensure_typical_offerings(session, catalog_by_code):
     for code, terms in TYPICAL_OFFERINGS.items():
@@ -306,17 +304,25 @@ def _ensure_typical_offerings(session, catalog_by_code):
             continue
         existing = {to.term for to in session.query(CourseTypicalOffering).filter_by(course_id=course.id)}
         for term in terms:
-            if term not in {"SPRING","SUMMER","FALL"}:
+            if term not in {"SPRING", "SUMMER", "FALL"}:
                 continue
             if term not in existing:
                 session.add(CourseTypicalOffering(course_id=course.id, term=term))
 
+
 def _ensure_prereqs(session, catalog_by_code):
+    """
+    Upserts prereq rows. If a (course_id, prereq_course_id, group_key) already exists,
+    update its fields; else insert. Default allow_concurrent=True.
+    """
     for target_code, groups in PREREQS.items():
         target = catalog_by_code.get(target_code.upper())
         if not target:
             continue
-        existing = {(pr.prereq_course_id, pr.group_key) for pr in session.query(CoursePrereq).filter_by(course_id=target.id)}
+
+        existing_rows = session.query(CoursePrereq).filter_by(course_id=target.id).all()
+        existing = {(pr.prereq_course_id, pr.group_key): pr for pr in existing_rows}
+
         gk = 1
         for group in groups:
             ids = []
@@ -330,11 +336,26 @@ def _ensure_prereqs(session, catalog_by_code):
             if not ok:
                 gk += 1
                 continue
+
             for pid in ids:
-                if (pid, gk) in existing:
-                    continue
-                session.add(CoursePrereq(course_id=target.id, prereq_course_id=pid, group_key=gk, min_grade="C", allow_concurrent=False))
+                key = (pid, gk)
+                row = existing.get(key)
+                if row:
+                    row.min_grade = row.min_grade or "C"
+                    row.allow_concurrent = True
+                else:
+                    session.add(
+                        CoursePrereq(
+                            course_id=target.id,
+                            prereq_course_id=pid,
+                            group_key=gk,
+                            min_grade="C",
+                            allow_concurrent=True,
+                        )
+                    )
             gk += 1
+    session.flush()
+
 
 def _ensure_program(session, code: str, name: str, total_credits: int):
     prog = session.query(DegreeProgram).filter_by(code=code).first()
@@ -348,14 +369,31 @@ def _ensure_program(session, code: str, name: str, total_credits: int):
         session.flush()
     return prog
 
-def _ensure_req_group(session, program_id: int, title: str, kind: str, sort_order: int,
-                      min_count: int = 0, course_codes: list[str] | None = None,
-                      dept: str | None = None, min_number: int | None = None, allow_double: bool = False):
+
+def _ensure_req_group(
+    session,
+    program_id: int,
+    title: str,
+    kind: str,
+    sort_order: int,
+    min_count: int = 0,
+    course_codes: list[str] | None = None,
+    dept: str | None = None,
+    min_number: int | None = None,
+    allow_double: bool = False,
+):
     g = session.query(ReqGroup).filter_by(program_id=program_id, title=title, kind=kind).first()
     if not g:
-        g = ReqGroup(program_id=program_id, title=title, kind=kind, min_count=min_count,
-                     dept_prefix=dept, min_number=min_number, sort_order=sort_order,
-                     allow_double_count=allow_double)
+        g = ReqGroup(
+            program_id=program_id,
+            title=title,
+            kind=kind,
+            min_count=min_count,
+            dept_prefix=dept,
+            min_number=min_number,
+            sort_order=sort_order,
+            allow_double_count=allow_double,
+        )
         session.add(g)
         session.flush()
     else:
@@ -374,63 +412,117 @@ def _ensure_req_group(session, program_id: int, title: str, kind: str, sort_orde
                 session.add(ReqGroupCourse(group_id=g.id, course_id=c.id, min_grade="C"))
     return g
 
+
 def _seed_core(session, prog):
     order = 0
     _ensure_req_group(session, prog.id, "CSCI Core • Take all", "ALL", order, course_codes=CSCI_CORE_ALL); order += 1
-    _ensure_req_group(session, prog.id, "CSCI Programming Language • Pick one", "ANY_COUNT", order, min_count=1,
-                      course_codes=["CSCI 207","CSCI 208","CSCI 209"]); order += 1
-    _ensure_req_group(session, prog.id, "Advanced CSCI Electives • Pick three", "ANY_COUNT", order, min_count=3,
-                      course_codes=ADV_ELECTIVES_PICK_THREE); order += 1
-    _ensure_req_group(session, prog.id, "CSCI 200+ • Pick one", "FILTER", order, min_count=1,
-                      dept="CSCI", min_number=200); order += 1
+    _ensure_req_group(
+        session,
+        prog.id,
+        "CSCI Programming Language • Pick one",
+        "ANY_COUNT",
+        order,
+        min_count=1,
+        course_codes=["CSCI 207", "CSCI 208", "CSCI 209"],
+    ); order += 1
+    _ensure_req_group(
+        session,
+        prog.id,
+        "Advanced CSCI Electives • Pick three",
+        "ANY_COUNT",
+        order,
+        min_count=3,
+        course_codes=ADV_ELECTIVES_PICK_THREE,
+    ); order += 1
+    _ensure_req_group(
+        session, prog.id, "CSCI 200+ • Pick one", "FILTER", order, min_count=1, dept="CSCI", min_number=200
+    ); order += 1
+
 
 def _seed_foundations(session, prog):
     order = 0
-    # Math core: keep fine-grained groups; UI will merge under one section
-    _ensure_req_group(session, prog.id, "Math Core • Calculus I • Pick one", "ANY_COUNT", order, min_count=1,
-                      course_codes=["MATH 160"]); order += 1
-    _ensure_req_group(session, prog.id, "Math Core • Calculus I Split • Take all", "ALL", order,
-                      course_codes=["MATH 160A","MATH 160B"]); order += 1
-    _ensure_req_group(session, prog.id, "Math Core • Calculus II • Pick one", "ANY_COUNT", order, min_count=1,
-                      course_codes=["MATH 161"]); order += 1
-    _ensure_req_group(session, prog.id, "Math Core • Calculus II Split • Take all", "ALL", order,
-                      course_codes=["MATH 161A","MATH 161B"]); order += 1
-    _ensure_req_group(session, prog.id, "Math Core • Discrete Mathematics • Take all", "ALL", order,
-                      course_codes=["MATH 174"]); order += 1
-    _ensure_req_group(session, prog.id, "Math Core • Statistics + Lab • Take all", "ALL", order,
-                      course_codes=["STAT 201","STAT 201L"]); order += 1
+    _ensure_req_group(session, prog.id, "Math Core • Calculus I • Pick one", "ANY_COUNT", order, min_count=1, course_codes=["MATH 160"]); order += 1
+    _ensure_req_group(session, prog.id, "Math Core • Calculus I Split • Take all", "ALL", order, course_codes=["MATH 160A", "MATH 160B"]); order += 1
+    _ensure_req_group(session, prog.id, "Math Core • Calculus II • Pick one", "ANY_COUNT", order, min_count=1, course_codes=["MATH 161"]); order += 1
+    _ensure_req_group(session, prog.id, "Math Core • Calculus II Split • Take all", "ALL", order, course_codes=["MATH 161A", "MATH 161B"]); order += 1
+    _ensure_req_group(session, prog.id, "Math Core • Discrete Mathematics • Take all", "ALL", order, course_codes=["MATH 174"]); order += 1
+    _ensure_req_group(session, prog.id, "Math Core • Statistics + Lab • Take all", "ALL", order, course_codes=["STAT 201", "STAT 201L"]); order += 1
 
-    _ensure_req_group(session, prog.id, "Math Path • Pick one", "ANY_COUNT", order, min_count=1,
-                      course_codes=["MATH 220","MATH 260","MATH 307","MATH 308","MATH 320","MATH 344","MATH 407","MATH 408"]); order += 1
-    _ensure_req_group(session, prog.id, "Math Path • Modeling I + Lab • Take all", "ALL", order,
-                      course_codes=["MATH 242","MATH 242L"]); order += 1
+    _ensure_req_group(
+        session,
+        prog.id,
+        "Math Path • Pick one",
+        "ANY_COUNT",
+        order,
+        min_count=1,
+        course_codes=["MATH 220", "MATH 260", "MATH 307", "MATH 308", "MATH 320", "MATH 344", "MATH 407", "MATH 408"],
+    ); order += 1
+    _ensure_req_group(session, prog.id, "Math Path • Modeling I + Lab • Take all", "ALL", order, course_codes=["MATH 242", "MATH 242L"]); order += 1
 
     # Science: one lecture required; matching lab required (UI merges)
     lec_codes = [lec for (lec, _lab) in SCI_LECTURE_LAB_PAIRS]
-    _ensure_req_group(session, prog.id, "Science Core • Pick one lecture", "ANY_COUNT", order, min_count=1,
-                      course_codes=lec_codes); order += 1
+    _ensure_req_group(session, prog.id, "Science Core • Pick one lecture", "ANY_COUNT", order, min_count=1, course_codes=lec_codes); order += 1
     for (lec, lab) in SCI_LECTURE_LAB_PAIRS:
-        _ensure_req_group(session, prog.id, f"Science Core • Lab for {lec} • Take all", "ALL", order,
-                          course_codes=[lab]); order += 1
+        _ensure_req_group(session, prog.id, f"Science Core • Lab for {lec} • Take all", "ALL", order, course_codes=[lab]); order += 1
 
-    _ensure_req_group(session, prog.id, "Communication • Pick one", "ANY_COUNT", order, min_count=1,
-                      course_codes=["COMM 140","ENGL 290","ENGL 390"]); order += 1
+    _ensure_req_group(session, prog.id, "Communication • Pick one", "ANY_COUNT", order, min_count=1, course_codes=["COMM 140", "ENGL 290", "ENGL 390"]); order += 1
+
 
 def seed(session):
+    # Ensure demo user
     user = session.query(User).filter_by(email="demo@example.com").first()
     if not user:
         user = User(email="demo@example.com", name="Demo User")
         session.add(user)
         session.flush()
 
+    # --- Insert missing semesters with unique temporary orders (avoid NULL + UNIQUE collisions) ---
+    max_order = session.query(func.max(StudentSemester.order)).filter_by(student_id=user.id).scalar()
+    max_order = int(max_order) if max_order is not None else -1
+    TEMP_OFFSET = 1000  # keep temp orders disjoint from final 0..N-1
+
     existing = {(s.term, s.year) for s in session.query(StudentSemester.term, StudentSemester.year).filter_by(student_id=user.id)}
-    order = 0
+    to_insert = []
     for name, term, year in SEMESTERS:
         if (term, year) not in existing:
-            session.add(StudentSemester(student_id=user.id, name=name, term=term, year=year, order=order))
-        order += 1
+            max_order += 1
+            to_insert.append(
+                StudentSemester(
+                    student_id=user.id,
+                    name=name,
+                    term=term,
+                    year=year,
+                    order=max_order + TEMP_OFFSET,  # unique temp slot
+                )
+            )
+    if to_insert:
+        session.add_all(to_insert)
+        session.flush()
+
+    # --- Normalize per-student order to dense 0..N-1 using two-phase disjoint assignment ---
+    rows = session.query(StudentSemester).filter(StudentSemester.student_id == user.id).all()
+
+    def tweight(t: str | None) -> int:
+        t = (t or "").upper()
+        return 1 if t == "SPRING" else 2 if t == "SUMMER" else 3 if t == "FALL" else 0
+
+    # Sort: prefer existing explicit order; else by (year, term, id)
+    sortable = sorted(
+        rows,
+        key=lambda s: (0 if s.order is not None else 1, s.order or 0, int(s.year or 0), tweight(s.term), s.id),
+    )
+
+    # Phase A: move all orders into a far-away band to ensure no collisions when assigning 0..N-1
+    for s in rows:
+        s.order = (s.order or 0) + TEMP_OFFSET
     session.flush()
 
+    # Phase B: assign canonical 0..N-1
+    for idx, s in enumerate(sortable):
+        s.order = idx
+    session.flush()
+
+    # --- Catalog (idempotent) ---
     existing_codes = {code for (code,) in session.query(CourseCatalog.code).all()}
     to_add = [CourseCatalog(code=code, title=title, credits=credits) for code, title, credits in COURSES if code not in existing_codes]
     if to_add:
@@ -443,7 +535,7 @@ def seed(session):
     _ensure_typical_offerings(session, catalog_by_code)
     _ensure_prereqs(session, catalog_by_code)
 
-    core  = _ensure_program(session, CORE_CODE,  CORE_NAME, 60)
+    core = _ensure_program(session, CORE_CODE, CORE_NAME, 60)
     found = _ensure_program(session, FOUND_CODE, FOUND_NAME, 30)
 
     _seed_core(session, core)

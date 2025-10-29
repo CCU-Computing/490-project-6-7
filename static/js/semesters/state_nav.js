@@ -1,4 +1,3 @@
-// semesters/state_nav.js
 export const maxPerSemester = 8;      // backend guard
 export const maxCreditsPerSem = 18;   // client guard
 
@@ -48,7 +47,7 @@ export async function addClass(course_id, semester_id, section = null) {
   return r.json();
 }
 
-// Move an existing StudentCourse to another semester
+// Move an existing StudentCourse to another semester (route may be defined elsewhere)
 export async function moveClass(studentCourseId, semester_id) {
   const r = await fetch(`/api/classes/${studentCourseId}`, {
     method: "PATCH",
@@ -70,10 +69,19 @@ export function semCredits(sem){ return (sem.classes || []).reduce((s,c)=>s+toNu
 export function remainingCredits(sem){ return Math.max(0, maxCreditsPerSem - semCredits(sem)); }
 export function escapeHTML(s){ return String(s).replace(/[&<>"']/g, m => ({ "&":"&amp;","<":"&lt;","&gt;":">","\"":"&quot;","'":"&#039;" }[m])); }
 
+// Keep DOM dataset in sync with current semester *and* its id
+export function syncCurrentDataset() {
+  const idx = getCurrent();
+  document.body.dataset.currentIndex = String(idx);
+  const sem = semesters[idx];
+  document.body.dataset.currentSemesterId = sem && sem.id ? String(sem.id) : "";
+}
+
 // Navigation helpers
 export function scrollToIndex(i, smooth = true, cardLis = []) {
   const next = Math.max(0, Math.min(getSemesters().length - 1, i));
   setCurrent(next);
+  syncCurrentDataset();
   const li = cardLis[next];
   if (li) li.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "nearest", inline: "center" });
 }
@@ -95,7 +103,12 @@ export function updateCenteredSemester(cardLis = [], cardDivs = []) {
     const d = Math.abs(center - vpCenter);
     if (d < min) { min = d; best = idx; }
   });
-  if (best !== getCurrent()) setCurrent(best);
+  if (best !== getCurrent()) {
+    setCurrent(best);
+    syncCurrentDataset();
+  } else {
+    // still ensure dataset has an id for the current index
+    syncCurrentDataset();
+  }
   updateDotsAndHighlight(cardDivs);
 }
-//... (1 line left)

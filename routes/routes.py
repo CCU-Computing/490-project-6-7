@@ -1,8 +1,7 @@
 # routes/routes.py
 from __future__ import annotations
 
-from collections import defaultdict
-
+from typing import Any
 from flask import Blueprint, render_template, jsonify, request, abort
 from sqlalchemy import func, or_
 
@@ -15,6 +14,7 @@ from models.models import (
     DegreeProgram,
     CoursePrereq,
     CourseTypicalOffering,
+    ReqGroup,
 )
 
 bp = Blueprint("routes", __name__)
@@ -23,7 +23,6 @@ MAX_CLASSES_PER_SEM = 8
 MAX_CREDITS_PER_SEM = 18.0
 
 
-# ----------------- helpers -----------------
 def get_current_user() -> User:
     uid = request.args.get("user_id", type=int)
     if uid:
@@ -37,6 +36,35 @@ def get_current_user() -> User:
         db.session.add(u)
         db.session.flush()
     return u
+
+
+def _term_weight(term: str | None) -> int:
+    t = (term or "").upper()
+    return 1 if t == "SPRING" else 2 if t == "SUMMER" else 3 if t == "FALL" else 0
+
+
+def normalize_semester_orders(student_id: int) -> None:
+    rows = (
+        db.session.query(StudentSemester)
+        .filter(StudentSemester.student_id == student_id)
+        .all()
+    )
+    if not rows:
+        return
+    sortable = []
+    for s in rows:
+        if s.order is not None:
+            sortable.append((0, int(s.order), 0, 0, s.id, s))
+        else:
+            sortable.append((1, 0, int(s.year or 0), _term_weight(s.term), s.id, s))
+    sortable.sort()
+    changed = False
+    for new_order, (_, _, _, _, _sid, s) in enumerate(sortable):
+        if s.order != new_order:
+            s.order = new_order
+            changed = True
+    if changed:
+        db.session.commit()
 
 
 def sc_to_dict(sc: StudentCourse):
@@ -72,17 +100,16 @@ def sem_to_dict(s: StudentSemester):
         "name": s.name,
         "term": s.term,
         "year": s.year,
+        "order": s.order,
         "classes": [sc_to_dict(sc) for sc in s.courses],
     }
 
 
 def semester_load_for_user(user_id: int):
+    normalize_semester_orders(user_id)
     return (
         StudentSemester.query.filter_by(student_id=user_id)
-        .order_by(
-            StudentSemester.year.asc().nullsfirst(),
-            StudentSemester.id.asc(),
-        )
+        .order_by(StudentSemester.order.asc(), StudentSemester.id.asc())
         .all()
     )
 
@@ -106,6 +133,7 @@ def semester_count(semester_id: int) -> int:
     )
 
 
+# kept for other views; not used in prereq gating anymore
 def _grade_ok(grade: str | None, min_grade: str | None) -> bool:
     if not min_grade:
         return True
@@ -120,13 +148,11 @@ def _grade_ok(grade: str | None, min_grade: str | None) -> bool:
     return rank.get(grade.upper(), -1) >= rank.get(min_grade.upper(), 99)
 
 
-# ----------------- pages -----------------
 @bp.route("/")
 def planner():
     return render_template("planner.html")
 
 
-# ----------------- semesters -----------------
 @bp.get("/api/semesters")
 def api_list_semesters():
     user = get_current_user()
@@ -138,11 +164,13 @@ def api_list_semesters():
 def api_create_semester():
     user = get_current_user()
     data = request.get_json(force=True) or {}
-    name = (data.get("name") or "").strip()
+    name = (data.get("name") or "").trim()
     term = (data.get("term") or "").strip() or None
     year = data.get("year")
     if not name:
         abort(400, "name required")
+
+    normalize_semester_orders(user.id)
     max_order = (
         db.session.query(func.coalesce(func.max(StudentSemester.order), -1))
         .filter_by(student_id=user.id)
@@ -156,7 +184,6 @@ def api_create_semester():
     return jsonify(sem_to_dict(s)), 201
 
 
-# ----------------- catalog search (unassigned by default) -----------------
 @bp.get("/api/courses")
 def api_search_courses():
     user = get_current_user()
@@ -183,16 +210,8 @@ def api_search_courses():
     )
 
 
-# ----------------- add a course to a semester -----------------
 @bp.post("/api/classes")
 def api_add_class():
-    """
-    Body: { "course_id": <catalog id>, "semester_id": <student_semester id>, "section": "A1" }
-    Enforces:
-      - per-user course uniqueness
-      - <= 8 classes per semester
-      - <= 18 credits per semester
-    """
     user = get_current_user()
     data = request.get_json(force=True) or {}
     course_id = data.get("course_id")
@@ -221,7 +240,7 @@ def api_add_class():
 
     cur = semester_credits(semester_id)
     if cur + float(cat.credits or 0) > MAX_CREDITS_PER_SEM:
-        abort(409, f"credit limit {MAX_CREDITS_PER_SEM}) would be exceeded")
+        abort(409, f"credit limit {MAX_CREDITS_PER_SEM} would be exceeded")
 
     maxpos = (
         db.session.query(func.coalesce(func.max(StudentCourse.position), -1))
@@ -241,61 +260,127 @@ def api_add_class():
     return jsonify(sc_to_dict(sc)), 201
 
 
-# ----------------- requirement-aware catalog for modal -----------------
+@bp.delete("/api/classes/<int:sc_id>")
+def api_delete_class(sc_id: int):
+    user = get_current_user()
+    sc = (
+        db.session.query(StudentCourse)
+        .filter_by(id=sc_id, student_id=user.id)
+        .first()
+    )
+    if not sc:
+        abort(404, "class not found")
+
+    sem_id = sc.semester_id
+    db.session.delete(sc)
+    db.session.flush()
+
+    rows = (
+        db.session.query(StudentCourse)
+        .filter_by(semester_id=sem_id, student_id=user.id)
+        .order_by(StudentCourse.position.asc(), StudentCourse.id.asc())
+        .all()
+    )
+    for i, row in enumerate(rows):
+        row.position = i
+
+    db.session.commit()
+    return ("", 204)
+
+
 @bp.get("/api/requirements")
 def api_requirements():
     """
-    Returns requirement groups with per-course availability.
-    Adds planned-aware fields using current semester order:
-      - prereq_ok_planned
-      - unmet_prereqs_planned
+    Prereq policy used for gating:
+      - Earlier terms (< anchor): any status {PLANNED, IN_PROGRESS, COMPLETED} counts.
+      - Same term (== anchor): counts only if allow_concurrent=True.
+      - Later terms (> anchor): does not count.
+      - Grade is ignored entirely.
     """
     user = get_current_user()
     program_code = request.args.get("program") or "BS-CS-Core-2025"
     q = (request.args.get("q") or "").strip().lower()
     current_term = (request.args.get("current_term") or "").strip().upper()
+
+    normalize_semester_orders(user.id)
+
+    current_sem_id = request.args.get("current_semester_id", type=int)
     current_order = request.args.get("current_order", type=int)
 
     prog = db.session.query(DegreeProgram).filter_by(code=program_code).first()
     if not prog:
         abort(404, "degree program not found")
 
-    # student status
     sc_rows = db.session.query(StudentCourse).filter_by(student_id=user.id).all()
-    completed_ids = {
-        r.course_id
-        for r in sc_rows
-        if getattr(r, "status", None) == "COMPLETED" and _grade_ok(getattr(r, "grade", None), "C")
-    }
-    assigned_ids = {r.course_id for r in sc_rows}
 
-    # planned-before set from semester.order
-    planned_before_ids: set[int] = set()
-    if current_order is not None:
-        for r in sc_rows:
-            sem = db.session.get(StudentSemester, r.semester_id)
-            if sem and sem.order is not None and sem.order < current_order:
-                planned_before_ids.add(r.course_id)
+    user_sems = semester_load_for_user(user.id)
+    ranks_by_id: dict[int, int] = {s.id: int(s.order) for s in user_sems}
+    if current_sem_id and current_sem_id in ranks_by_id:
+        anchor_rank = ranks_by_id[current_sem_id]
+    elif current_order is not None:
+        anchor_rank = int(current_order)
+    else:
+        anchor_rank = 10**9
 
-    # prereqs map
-    prereq_rows = db.session.query(CoursePrereq).all()
-    req_map: dict[int, dict[int, list[CoursePrereq]]] = defaultdict(lambda: defaultdict(list))
-    for r in prereq_rows:
-        req_map[r.course_id][r.group_key].append(r)
+    course_state: dict[int, dict[str, Any]] = {}
+    for r in sc_rows:
+        rk = ranks_by_id.get(r.semester_id)
+        status_val = getattr(r, "status", None) or "PLANNED"
+        grade_val = getattr(r, "grade", None)
+        course_state[r.course_id] = {
+            "status": status_val,
+            "grade": grade_val,
+            "order": rk,
+        }
 
-    # offerings map
     off_rows = db.session.query(CourseTypicalOffering).all()
-    off_map: dict[int, set[str]] = defaultdict(set)
+    off_map: dict[int, set[str]] = {}
     for o in off_rows:
-        off_map[o.course_id].add(o.term)
+        off_map.setdefault(o.course_id, set()).add(o.term)
 
-    # id->code
-    cat_rows = db.session.query(CourseCatalog.id, CourseCatalog.code).all()
-    id_to_code = {cid: code for cid, code in cat_rows}
+    prereq_rows = db.session.query(CoursePrereq).all()
+    req_map: dict[int, dict[int, list[CoursePrereq]]] = {}
+    for r in prereq_rows:
+        req_map.setdefault(r.course_id, {}).setdefault(r.group_key, []).append(r)
+
+    cat_rows = db.session.query(CourseCatalog.id, CourseCatalog.code, CourseCatalog.title, CourseCatalog.credits).all()
+    id_to_code = {cid: code for cid, code, _, _ in cat_rows}
+    catalog_by_id = {cid: (code, title, credits) for cid, code, title, credits in cat_rows}
+
+    def prereq_rule_satisfied(rule: CoursePrereq) -> bool:
+        st = course_state.get(rule.prereq_course_id)
+        if not st:
+            return False
+        ord_ = st.get("order")
+        if ord_ is None:
+            return False
+        status = st.get("status") or "PLANNED"
+        if ord_ < anchor_rank:
+            return status in {"PLANNED", "IN_PROGRESS", "COMPLETED"}
+        if ord_ == anchor_rank:
+            return bool(rule.allow_concurrent) and status in {"PLANNED", "IN_PROGRESS", "COMPLETED"}
+        return False
+
+    def prereq_eval_for_course(course_id: int) -> tuple[bool, list[int], bool, list[int]]:
+        groups = req_map.get(course_id, {})
+        if not groups:
+            return True, [], True, []
+        satisfied = False
+        missing: list[int] = []
+        for _gk, rules in groups.items():
+            if all(prereq_rule_satisfied(r) for r in rules):
+                satisfied = True
+                missing = []
+                break
+            else:
+                for r in rules:
+                    if not prereq_rule_satisfied(r):
+                        missing.append(r.prereq_course_id)
+        missing = sorted(set(missing))
+        return satisfied, missing, satisfied, missing
 
     groups_out = []
     for g in prog.groups:
-        # candidates
         if g.kind in ("ALL", "ANY_COUNT"):
             listed_ids = [rc.course_id for rc in g.courses]
             cats = (
@@ -323,63 +408,18 @@ def api_requirements():
             cats.sort(key=lambda x: x.code)
 
         if q:
-            cats = [c for c in cats if q in c.code.lower() or (c.title and q in c.title.lower())]
+            ql = q.lower()
+            cats = [c for c in cats if ql in c.code.lower() or (c.title and ql in c.title.lower())]
 
         items = []
         for c in cats:
-            groups_for_course = req_map.get(c.id, {})
+            ok_completed, missing_completed, ok_planned, missing_planned = prereq_eval_for_course(c.id)
 
-            # completed-only check
-            missing_ids_completed: list[int] = []
-            if not groups_for_course:
-                prereq_ok_completed = True
-            else:
-                satisfied_any = False
-                union_missing = []
-                for _gkey, rules in groups_for_course.items():
-                    all_ok = True
-                    these_missing = []
-                    for r in rules:
-                        if r.prereq_course_id not in completed_ids:
-                            all_ok = False
-                            these_missing.append(r.prereq_course_id)
-                    if all_ok:
-                        satisfied_any = True
-                        union_missing = []
-                        break
-                    else:
-                        union_missing.extend(these_missing)
-                prereq_ok_completed = satisfied_any
-                missing_ids_completed = sorted(set(union_missing))
-
-            # planned-aware check
-            missing_ids_planned: list[int] = []
-            if not groups_for_course:
-                prereq_ok_planned = True
-            else:
-                satisfied_any = False
-                union_missing = []
-                for _gkey, rules in groups_for_course.items():
-                    all_ok = True
-                    these_missing = []
-                    for r in rules:
-                        if r.prereq_course_id not in completed_ids and r.prereq_course_id not in planned_before_ids:
-                            all_ok = False
-                            these_missing.append(r.prereq_course_id)
-                    if all_ok:
-                        satisfied_any = True
-                        union_missing = []
-                        break
-                    else:
-                        union_missing.extend(these_missing)
-                prereq_ok_planned = satisfied_any
-                missing_ids_planned = sorted(set(union_missing))
-
-            offered_terms = sorted(list(off_map.get(c.id, set())))
-            offered_this_term = current_term in off_map.get(c.id, set()) if current_term else False
-
-            taken = c.id in completed_ids
-            assigned = c.id in assigned_ids
+            offered_terms_set = off_map.get(c.id, set())
+            offered_terms = sorted(list(offered_terms_set))
+            taken = (course_state.get(c.id, {}).get("status") == "COMPLETED")
+            assigned = c.id in course_state
+            offered_this_term = bool(current_term and offered_terms_set and current_term in offered_terms_set)
 
             items.append(
                 {
@@ -391,13 +431,28 @@ def api_requirements():
                     "assigned": assigned,
                     "offered_terms": offered_terms,
                     "offered_this_term": offered_this_term,
-                    "prereq_ok": prereq_ok_completed,
-                    "unmet_prereqs": [id_to_code.get(i, f"ID {i}") for i in missing_ids_completed],
-                    "prereq_ok_planned": prereq_ok_planned,
-                    "unmet_prereqs_planned": [id_to_code.get(i, f"ID {i}") for i in missing_ids_planned],
-                    "disabled": taken or assigned or (not prereq_ok_planned),
+                    "prereq_ok": ok_planned,
+                    "unmet_prereqs": [id_to_code.get(i, f"ID {i}") for i in missing_planned],
+                    "prereq_ok_planned": ok_planned,
+                    "unmet_prereqs_planned": [id_to_code.get(i, f"ID {i}") for i in missing_planned],
+                    "prereq_groups": [
+                        [id_to_code.get(r.prereq_course_id, f"ID {r.prereq_course_id}") for r in sorted(rules, key=lambda x: x.prereq_course_id)]
+                        for _gk, rules in sorted(req_map.get(c.id, {}).items(), key=lambda x: x[0])
+                    ],
+                    "prereq_complexity": min(
+                        (len(group_rules) for group_rules in req_map.get(c.id, {}).values()),
+                        default=0
+                    ),
+                    "disabled": taken or assigned or (not ok_planned),
                 }
             )
+
+        def sort_key(it):
+            has_pr = (it.get("prereq_complexity") or 0) > 0
+            tier = 2 if has_pr else 0
+            return (tier, it.get("prereq_complexity") or 0, it.get("code") or "")
+
+        items.sort(key=sort_key)
 
         if g.kind == "ALL":
             required_count = len(items)
@@ -417,9 +472,67 @@ def api_requirements():
             }
         )
 
-    return jsonify(
-        {
-            "program": {"code": prog.code, "name": prog.name},
-            "groups": groups_out,
-        }
-    )
+    return jsonify({"program": {"code": prog.code, "name": prog.name}, "groups": groups_out})
+
+
+@bp.get("/api/requirements/progress")
+def api_requirements_progress():
+    """
+    Return planned_count and required_count per group for a program,
+    computed from current StudentCourse rows.
+    """
+    user = get_current_user()
+    program_code = request.args.get("program")
+    if not program_code:
+        abort(400, "program required")
+
+    prog = db.session.query(DegreeProgram).filter_by(code=program_code).first()
+    if not prog:
+        abort(404, "degree program not found")
+
+    planned_ids = {
+        cid for (cid,) in db.session.query(StudentCourse.course_id)
+        .filter(StudentCourse.student_id == user.id)
+        .all()
+    }
+    catalog = {c.id: c for c in db.session.query(CourseCatalog).all()}
+
+    def code_ok_for_filter(course_id: int, g: ReqGroup) -> bool:
+        c = catalog.get(course_id)
+        if not c or not c.code:
+            return False
+        parts = c.code.strip().upper().split()
+        if len(parts) != 2:
+            return False
+        dept, num_s = parts
+        try:
+            num = int(num_s)
+        except ValueError:
+            return False
+        if g.dept_prefix and dept != g.dept_prefix:
+            return False
+        if g.min_number is not None and num < g.min_number:
+            return False
+        return True
+
+    groups_out = []
+    for g in prog.groups:
+        if g.kind in ("ALL", "ANY_COUNT"):
+            listed = [rc.course_id for rc in g.courses]
+            planned = sum(1 for cid in listed if cid in planned_ids)
+            required = len(listed) if g.kind == "ALL" else int(g.min_count or 0)
+            if g.kind == "ANY_COUNT":
+                planned = min(planned, required)
+        else:  # FILTER
+            eligible = [cid for cid in planned_ids if code_ok_for_filter(cid, g)]
+            required = int(g.min_count or 0)
+            planned = min(len(eligible), required)
+
+        groups_out.append({
+            "group_id": g.id,
+            "title": g.title,
+            "required_count": required,
+            "planned_count": planned,
+        })
+
+    return jsonify({"program": {"code": prog.code}, "groups": groups_out})

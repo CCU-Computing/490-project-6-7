@@ -4,7 +4,7 @@
  * Build a floating context menu rendered in a portal (document.body)
  * so it never gets clipped. Positioned near the anchor element.
  *
- * items: [{ label, colorClass?, icon?, onClick? }]
+ * items: [{ label, colorClass?, icon?, onClick?(anchorEl, menu) }]
  * anchorEl: HTMLElement used for positioning.
  */
 export function buildMenu(items = [], anchorEl = null) {
@@ -17,7 +17,14 @@ export function buildMenu(items = [], anchorEl = null) {
   menu.style.transform = "scale(0.98)";
   menu.style.pointerEvents = "auto";
 
-  const mkItem = (label, colorClass, iconSvg, onClick) => {
+  // Tabler-like minimal SVGs (valid paths)
+  const icons = {
+    info: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01"/><path d="M11 12h2v4"/></svg>`,
+    // move icon removed by request
+    trash:`<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/><path d="M9 7V4h6v3"/></svg>`
+  };
+
+  const mkItem = (label, colorClass, iconKey, onClick) => {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className =
@@ -25,28 +32,38 @@ export function buildMenu(items = [], anchorEl = null) {
       "hover:bg-gray-50 focus:outline-none";
     btn.innerHTML = `
       <span class="inline-flex h-5 w-5 items-center justify-center ${colorClass || "text-gray-600"}">
-        ${iconSvg || ""}
+        ${icons[iconKey] || ""}
       </span>
       <span class="text-gray-800">${label}</span>
     `;
     if (typeof onClick === "function") {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
-        onClick();
+        try { onClick(anchorEl, menu); } finally { destroy(); }
       });
+    } else {
+      btn.addEventListener("click", () => destroy());
     }
     return btn;
   };
 
-  // Tabler-like minimal SVGs (valid paths)
-  const icons = {
-    info: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01"/><path d="M11 12h2v4"/></svg>`,
-    move: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18M3 12h18"/><path d="m12 3-3 3m3-3 3 3m-3 18-3-3m3 3 3-3M3 12l3-3M3 12l3 3m15-3-3-3m3 3-3 3"/></svg>`,
-    trash:`<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/><path d="M9 7V4h6v3"/></svg>`
-  };
+  // If caller passes no items, provide a sane default: Details + Delete.
+  if (!items || items.length === 0) {
+    items = [
+      { label: "Details", icon: "info", colorClass: "text-blue-600", onClick: (el) => {
+          const ev = new CustomEvent("ctx:details", { detail: { anchor: el } });
+          window.dispatchEvent(ev);
+        } },
+      { label: "Delete", icon: "trash", colorClass: "text-red-600", onClick: (el) => {
+          const ev = new CustomEvent("ctx:delete", { detail: { anchor: el } });
+          window.dispatchEvent(ev);
+        } },
+    ];
+  }
 
   items.forEach(({ label, colorClass, icon, onClick }) => {
-    menu.appendChild(mkItem(label, colorClass, icons[icon] || "", onClick));
+    if (icon === "move") return; // removed tool
+    menu.appendChild(mkItem(label, colorClass, icon, onClick));
   });
 
   // Portal attach
@@ -54,7 +71,7 @@ export function buildMenu(items = [], anchorEl = null) {
 
   // Position near anchor (bottom-right), with viewport bounds guard
   const place = () => {
-    let x = window.scrollX + window.innerWidth - 12; // default right padding
+    let x = window.scrollX + window.innerWidth - 12;
     let y = window.scrollY + 12;
     if (anchorEl) {
       const r = anchorEl.getBoundingClientRect();
@@ -82,12 +99,27 @@ export function buildMenu(items = [], anchorEl = null) {
   window.addEventListener("resize", onWin, { passive: true });
   window.addEventListener("scroll", onWin, { passive: true });
 
+  // Close on outside click and on Escape
+  const onDocClick = (e) => {
+    if (!menu.contains(e.target)) destroy();
+  };
+  const onKey = (e) => {
+    if (e.key === "Escape") destroy();
+  };
+  setTimeout(() => {
+    document.addEventListener("mousedown", onDocClick, { passive: true });
+    document.addEventListener("keydown", onKey);
+  }, 0);
+
   // Cleanup helper
-  menu._destroy = () => {
+  function destroy() {
     window.removeEventListener("resize", onWin);
     window.removeEventListener("scroll", onWin);
+    document.removeEventListener("mousedown", onDocClick);
+    document.removeEventListener("keydown", onKey);
     menu.remove();
-  };
+  }
+  menu._destroy = destroy;
 
   return menu;
 }

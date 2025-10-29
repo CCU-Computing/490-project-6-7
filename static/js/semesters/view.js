@@ -1,11 +1,11 @@
-// static/js/semesters/view.js  (entry)
 import {
   maxCreditsPerSem,
   track, dots, viewport,
   fetchSemesters, deleteClass,
   getSemesters, setSemesters, getCurrent, setCurrent,
   semCredits, escapeHTML,
-  scrollToIndex, updateDotsAndHighlight, updateCenteredSemester
+  scrollToIndex, updateDotsAndHighlight, updateCenteredSemester,
+  syncCurrentDataset
 } from "./state_nav.js";
 import { buildMenu } from "../context_menu/menu.js";
 import { showError } from "../context_menu/toast.js";
@@ -27,16 +27,15 @@ export function render() {
   leftPad.className = "edge-pad";
   track.appendChild(leftPad);
 
-  document.body.dataset.currentIndex = String(getCurrent());
+  syncCurrentDataset();
 
   getSemesters().forEach((sem, i) => {
     const li = document.createElement("li");
     li.className = "snap-center shrink-0 card-li";
     li.addEventListener("click", (e) => {
-      // ignore clicks that originated from a context-menu button
       if (e.target.closest?.("[data-action='menu']")) return;
       setCurrent(i);
-      document.body.dataset.currentIndex = String(i);
+      syncCurrentDataset();
       snapToCurrent();
     });
 
@@ -84,7 +83,7 @@ export function render() {
     b.addEventListener("click", (e) => {
       e.stopPropagation();
       setCurrent(i);
-      document.body.dataset.currentIndex = String(i);
+      syncCurrentDataset();
       snapToCurrent();
     });
     dots.appendChild(b);
@@ -94,7 +93,7 @@ export function render() {
 
   window.addEventListener("resize", () => {
     updateCenteredSemester(cardLisRef, cardDivsRef);
-    document.body.dataset.currentIndex = String(getCurrent());
+    syncCurrentDataset();
     snapToCurrent();
   });
 
@@ -109,7 +108,6 @@ function classRow(cls) {
   const li = document.createElement("li");
 
   const wrap = document.createElement("div");
-  // grid keeps credit badges aligned in the same column
   wrap.className = "class-chip grid grid-cols-[1fr_auto_auto] items-center gap-3";
   wrap.style.position = "relative";
 
@@ -155,7 +153,6 @@ function classRow(cls) {
 function attachClassMenu(btn, cls) {
   if (!btn) return;
 
-  // Prevent parent click navigation when interacting with the menu button.
   ["pointerdown", "mousedown", "click"].forEach((ev) =>
     btn.addEventListener(ev, (e) => {
       e.preventDefault();
@@ -185,7 +182,6 @@ function attachClassMenu(btn, cls) {
     }
   };
 
-  // Open on pointerup so our outside handler (pointerdown) doesn't immediately close it.
   btn.addEventListener("pointerup", async (e) => {
     if (modalOpen()) return;
     e.preventDefault();
@@ -198,7 +194,7 @@ function attachClassMenu(btn, cls) {
       { label: "Move…",   colorClass: "text-amber-600", icon: "move", onClick: null },
       { label: "Delete",  colorClass: "text-red-600",   icon: "trash", onClick: async () => {
           try {
-            await deleteClass(cls.id); // StudentCourse id
+            await deleteClass(cls.id);
             const data = await fetchSemesters();
             setSemesters(data);
             window.dispatchEvent(new Event("planner:render"));
@@ -211,7 +207,6 @@ function attachClassMenu(btn, cls) {
     ];
 
     currentOpenMenu = buildMenu(items, btn);
-    // Attach outside-close BEFORE any subsequent clicks happen.
     document.addEventListener("pointerdown", onDocDown, true);
   });
 }
@@ -219,10 +214,10 @@ function attachClassMenu(btn, cls) {
 /* ---------------- Navigation ---------------- */
 function snapToCurrent() {
   scrollToIndex(getCurrent(), true, cardLisRef);
+  syncCurrentDataset();
   updateDotsAndHighlight(cardDivsRef);
 }
 function bindNavOnce() {
-  // One card per wheel gesture (skip when modal open)
   let wheelLock = false;
   viewport.addEventListener("wheel", (e) => {
     const m = document.getElementById("add-modal");
@@ -237,14 +232,13 @@ function bindNavOnce() {
       const next = Math.max(0, Math.min(getSemesters().length - 1, getCurrent() + dir));
       if (next !== getCurrent()) {
         setCurrent(next);
-        document.body.dataset.currentIndex = String(next);
+        syncCurrentDataset();
         snapToCurrent();
       }
       setTimeout(() => { wheelLock = false; }, 220);
     }
   }, { passive: false });
 
-  // Touch swipe, one card per gesture (skip when modal open)
   let startX = 0, isTouching = false;
   viewport.addEventListener("touchstart", (e) => {
     const m = document.getElementById("add-modal");
@@ -269,7 +263,7 @@ function bindNavOnce() {
       const next = Math.max(0, Math.min(getSemesters().length - 1, getCurrent() + dir));
       if (next !== getCurrent()) {
         setCurrent(next);
-        document.body.dataset.currentIndex = String(next);
+        syncCurrentDataset();
         snapToCurrent();
       }
     }
@@ -277,7 +271,6 @@ function bindNavOnce() {
 
   viewport.addEventListener("scroll", () => updateCenteredSemester(cardLisRef, cardDivsRef));
 
-  // Keyboard arrows (when modal closed)
   document.addEventListener("keydown", (e) => {
     const m = document.getElementById("add-modal");
     const isModalOpen = m && !m.classList.contains("hidden");
@@ -285,13 +278,13 @@ function bindNavOnce() {
     if (e.key === "ArrowLeft") {
       const next = Math.max(0, getCurrent() - 1);
       setCurrent(next);
-      document.body.dataset.currentIndex = String(next);
+      syncCurrentDataset();
       snapToCurrent();
     }
     if (e.key === "ArrowRight") {
       const next = Math.min(getSemesters().length - 1, getCurrent() + 1);
       setCurrent(next);
-      document.body.dataset.currentIndex = String(next);
+      syncCurrentDataset();
       snapToCurrent();
     }
   });

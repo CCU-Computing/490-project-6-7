@@ -15,7 +15,6 @@
 .btn-base:disabled { opacity: 0.4; pointer-events: none; }
 
 #viewport { width: 100vw; margin-left: calc(50% - 50vw); margin-right: calc(50% - 50vw); scroll-padding-left: 50vw; scroll-padding-right: 50vw; }
-
 .edge-pad { flex: 0 0 50vw; }
 
 .card-li { flex: 0 0 calc((100% - 2 * 1.5rem) / 3); }
@@ -29,7 +28,6 @@
   box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.06);
   transition: transform 300ms ease, box-shadow 300ms ease, outline 200ms ease;
 }
-
 .card-selected {
   outline: 3px solid rgba(59,130,246,0.30);
   box-shadow:
@@ -58,23 +56,17 @@
 
 .drop-ok { box-shadow: inset 0 0 0 3px rgba(59,130,246,0.35); transform: translateZ(0); }
 
-/* ---------- Modal layout (grid with scroll center) ---------- */
+/* ---------- Modal layout ---------- */
 .modal-panel {
   width: min(900px, 92vw);
   height: min(720px, 92vh);
   display: grid;
-  grid-template-rows: auto 1fr auto; /* header | body | footer */
+  grid-template-rows: auto 1fr auto;
   min-height: 0;
 }
-
 .modal-header { min-height: 0; }
 .modal-footer { min-height: 0; }
-
-.modal-body, .body {
-  min-height: 0;
-  overflow: hidden;   /* contain scrolling to results */
-  display: block;
-}
+.modal-body, .body { min-height: 0; overflow: hidden; display: block; }
 
 .results-scroll {
   height: 100%;
@@ -85,52 +77,80 @@
   -webkit-overflow-scrolling: touch;
 }
 
-/* cards in modal */
-.modal-card {
-  border: 1px solid rgba(0,0,0,0.06);
-  border-radius: 0.75rem;
-  background: #fff;
-  padding: 0.75rem 0.75rem;
-  box-shadow: 0 1px 1px rgba(0,0,0,0.04);
-  display: flex; gap: 0.75rem; align-items: center; justify-content: space-between;
+/* Distinguish modal-group background */
+.modal-group { background: #f8fafc; }
+
+/* Sticky group header */
+.modal-group-header { position: sticky; top: 0; z-index: 20; background: inherit; }
+
+/* ===== Enforce 3-column grid for class cards (default) ===== */
+.results-scroll .modal-group .modal-group-body .modal-grid {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  gap: 0.5rem !important;
+  align-items: stretch !important;
 }
-.modal-card[data-selected="true"] { outline: 2px solid rgba(59,130,246,0.45); }
-
-
-/* ---------- Section progress bars (always visible in header) ---------- */
-.section-header {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
+@media (max-width: 1024px) {
+  .results-scroll .modal-group .modal-group-body .modal-grid {
+    grid-template-columns: repeat(2, minmax(0,1fr)) !important;
+  }
+}
+@media (max-width: 640px) {
+  .results-scroll .modal-group .modal-group-body .modal-grid {
+    grid-template-columns: 1fr !important;
+  }
 }
 
-.section-progress {
-  display: block;              /* independent of collapsible body */
-  width: 220px;
-  height: 10px;
-  border-radius: 9999px;
-  background: #f1f5f9;         /* slate-100 track */
+/* Ensure grid items don't force full width */
+.modal-grid > .modal-card {
+  width: auto !important;
+  max-width: 100% !important;
+  grid-column: auto !important;
+  height: 100%;
+}
+
+/* ----- Card state backgrounds (order matters; keep after generic) ----- */
+.modal-card { background: #ffffff !important; border: 1px solid #e5e7eb; }
+.modal-card.is-planned  { background: #ecfdf5 !important; border-color: #10b981 !important; } /* green-50 */
+.modal-card.is-blocked  { background: #fefce8 !important; border-color: #f59e0b !important; } /* yellow-50 */
+.modal-card.is-available{ background: #ffffff !important; border-color: #e5e7eb !important; }
+
+/* Title two-line clamp */
+.two-line-title{
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
-  flex: 0 0 auto;
+  max-height: 3.1em;
 }
 
-.section-progress .bar {
-  display: flex;               /* left-to-right segments */
-  height: 100%;
-  width: 100%;
-}
+/* Offered row padding */
+.offered-row { padding-bottom: 0.5rem; }
 
-.section-progress .done {
-  height: 100%;
-  background: #22c55e;         /* green-500: completed */
-  width: 0%;
-  transition: width 200ms ease;
+/* Yellow prereq box – fixed height & fixed width 322px */
+.prereq-box {
+  width: 322px;
+  max-width: 100%;
+  min-height: 26px;
+  font-size: 11px;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.25rem;
+  border-radius: 0.25rem;
+  padding: 0.25rem 0.5rem;
 }
+.prereq-box.warn { background: #fefce8; border: 1px solid #fde68a; color: #92400e; }
+.prereq-box.spacer { visibility: hidden; border: 1px solid transparent; }
 
-.section-progress .inprogress {
-  height: 100%;
-  background: #eab308;         /* yellow-500: planned but not complete */
-  width: 0%;
-  transition: width 200ms ease;
+/* Progress widget in group headers (counter + bar) */
+.modal-group-header { gap: 0.5rem; }
+.modal-group-header .group-progress {
+  display: flex; align-items: center; gap: 0.5rem; margin-left: auto;
 }
+.modal-group-header .group-progress-bar {
+  width: 160px; height: 6px; border-radius: 9999px; background: #e5e7eb; overflow: hidden;
+}
+.modal-group-header .group-progress-fill {
+  height: 100%; background: #22c55e; width: 0%;
+}
+.modal-group-header .group-progress-text { min-width: 42px; text-align: right; font-size: 12px; }
